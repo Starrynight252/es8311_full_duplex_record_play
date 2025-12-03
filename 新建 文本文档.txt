@@ -1,0 +1,357 @@
+/*
+*使用ICBricks 程序-----测试New项目
+*/
+#include <Arduino.h>
+#include<Wire.h>
+#include"math.h"
+
+//#include"Macro_Function.h"
+
+//esp32 驱动 i2s库文件
+//#include"driver/i2s.h"
+//esp32 高级 i2s库文件
+#include <I2S.h>
+
+//iic
+#include "iicEquipment/iicEquipment.h"
+//蓝牙
+//#include "Bluetooth/BluetoothLE.h"
+
+//实时操作系统-使用多线程
+#include<freertos/FreeRTOS.h>
+#include<freertos/task.h>
+
+//LED 数量的数组-用于保存LED的颜色
+//CRGB leds_Colour[LED_NUMS] = {CRGB::Black,CRGB::Black,CRGB::Black,CRGB::Black,CRGB::Black}; -v -t upload
+
+
+//HT16K33 
+#include"HT16K33.h"
+
+//电源开关状态 true 启动|false 停止
+bool Power_Conversion = true;
+//喂狗时间
+unsigned long LoopbootTime;
+
+
+
+HT16K33 seg(0x70);
+
+uint32_t start, stop;
+i2s_mode_t mode = I2S_PHILIPS_MODE; // I2S decoder is needed
+uchar addr = 0x70;
+/*-------------------------ESP32单次操作----------------------------------*/
+void setup() 
+{
+  //将esp32设置为其支持的最大频率240Mhz
+  setCpuFrequencyMhz(240);
+
+
+  //FreeRTOS创建多线程 xTaskCreatePinnedToCore ||xTaskCreate
+  xTaskCreatePinnedToCore(
+    Synchronizing_Tasks,     //函数指针
+    "STasks",  //任务描述
+    1024 *4,            //堆栈大小configMINIMAL_STACK_SIZE
+    NULL,               //参数值
+    1,                  //优先级
+    NULL,               //句柄
+    0                //核心
+  );
+
+
+  if(true)
+  {
+    esp_task_wdt_init(60, true); //启用panic so ESP32重启
+    esp_task_wdt_add(NULL); //add current thread to WDT watch
+  }
+
+  /*Uart 初始化*/
+  Serial.begin(115200);
+  Serial2.begin(115200);  //默认16R 17T
+ // Serial2.begin(115200,SERIAL_8N1,17,16);  //RX,TX
+ 
+      //pinMode(VBAT_LED1,OUTPUT); 
+    pinMode(VBAT_LED2,OUTPUT); 
+    pinMode(VBAT_LED3,OUTPUT); 
+
+
+    pinMode(KEY_1,INPUT); 
+    pinMode(KEY_2,INPUT); 
+
+  /*IIC初始化*/
+  IIC_Initializ();
+  if(true)
+  {
+    /*IIS 初始化*/
+    I2S.begin(mode, 16000, 8);
+    /*IIS 初始化gio-(时钟,帧同步,共享,输出,输入)*/
+    I2S.setAllPins(15,5,18,18,19);
+  }
+  //BLE操作注册-初始化
+  //BLE_SerialPort2_init();
+
+  //BLE_ClientInit();
+  //BLE_ServerStartup("ESP32");
+  //EEPROM初始化 uuid+BLE_nume
+  //InitiaEEPROM();
+
+
+  //注册C->LUA函数
+  //UserProgram.setup();
+
+  if(false)
+  {
+    delay(10);
+    Wire.beginTransmission(0x70);  //address
+    Wire.write(0x20 | 1);
+    Wire.endTransmission();
+
+    delay(10);
+    Wire.beginTransmission(0x70);
+    Wire.write(0xA0); // ROM
+    Wire.endTransmission();
+
+    delay(10);
+    Wire.beginTransmission(0x70);
+    Wire.write(0xEF); 
+    Wire.endTransmission();
+
+    delay(10);
+    Wire.beginTransmission(0x70);
+    Wire.write(0x81); // Blinking / blanking command	Wire.endTransmission();  (0x80 | 1 << 1 | 1);
+    Wire.endTransmission();
+  }
+
+  
+
+
+
+  if(0)
+  {
+  seg.begin();
+
+  seg.displayOn();
+  Serial.println("displayTest()");
+  seg.displayTest(100);
+  seg.displayOff();
+  delay(1000);
+  seg.displayOn();
+  }
+
+  if(0)
+  {
+  sensor.init();
+  sensor.startContinuous();
+    //设置VL53L0X超时的时间
+  sensor.setTimeout(500);
+  }
+}
+
+
+const int buff_size = 128;
+int available,availableRead;
+uint8_t buffer[buff_size];
+
+//原始电量 与 原始电量累加
+uint16_t BatteryVoltage =0,TotalVoltage= 0;
+//映射电量
+uchar BatteryLevel = 0xff;
+//电量平均算法
+uchar AverageCount =0;
+
+//按键之前的状态
+bool Kay1State,Kay2State;
+//按键按下次数
+uchar Key1Presses,Key2Presses; 
+uint16_t displayBuffer[8];
+
+
+
+const int frequency = 440; // frequency of square wave in Hz
+const int amplitude = 500; // amplitude of square wave
+const int halfWavelength = (16000 / frequency); // half wavelength of square wave
+
+short sample = amplitude; // current sample value
+int count = 0;
+
+
+/*-------------------------ESP32循环操作----------------------------------*/
+void loop() 
+{
+
+  if (count % halfWavelength == 0 ) {
+    // invert the sample every half wavelength count multiple to generate square wave
+    sample = -1 * sample;
+  }
+
+  if(mode == I2S_PHILIPS_MODE || mode == ADC_DAC_MODE){ // write the same sample twice, once for Right and once for Left channel
+    I2S.write(sample); // Right channel
+    I2S.write(sample); // Left channel
+  }else if(mode == I2S_RIGHT_JUSTIFIED_MODE || mode == I2S_LEFT_JUSTIFIED_MODE){
+    // write the same only once - it will be automatically copied to the other channel
+    I2S.write(sample);
+  }
+
+  // increment the counter for the next sample
+  count++;
+
+
+      //看门狗复位
+    if(millis() - LoopbootTime >= 2000)  
+    {
+      #if DEBUG_WATCHDOG
+      Serial.println("\nloop Resetting WDT\n");
+      #endif
+
+      esp_task_wdt_reset(); //复位看门狗
+      LoopbootTime = millis();
+    }
+
+
+
+  //Serial.println("\nloop 启动\n");
+  if(false)  //只有启动后
+  { 
+
+
+    if(Serial2.available() >0) //如果有数据
+    {
+      Serial.println("STM32:\n");
+      for(int e=0,ch=0; ;e++)
+      {
+        ch = Serial2.read();
+        Serial.printf("%c",ch);
+        if(ch == '\n')
+          break;
+      }
+      Serial.println("endStm32\n");
+
+    }
+
+     //Serial.printf("VL53L0:%dmm\n",IIC_VL53L0_Continue());
+    
+  
+   /*i2s
+    available = I2S.available();
+    if(available < buff_size){
+      read = I2S.read(buffer, available);
+    }else{
+      read = I2S.read(buffer, buff_size);
+    }
+    I2S.write(buffer, read);
+    //I2S.end(); 
+    //*/
+
+   //Serial.printf("keY%d,%d\n",digitalRead(KEY_1),digitalRead(KEY_2));
+   
+   if(!digitalRead(KEY_1) && Kay1State)  //按键1是否按下
+   {
+      ++Key1Presses;
+      Serial.printf("K1_OK\n");
+      //Serial2.printf("K%x%x\r\n",01,01);
+      Serial2.write(0x4B);
+      Serial2.write(0x01);
+      Serial2.write(0x01);
+      Serial2.write(0x0D);
+      Serial2.write(0x0A);
+   }
+   else if(Key1Presses && Kay1State)
+   {
+      Key1Presses =0;
+      Serial.printf("K1_ON\n");
+      Serial2.write(0x4B);
+      Serial2.write(0x01);
+      Serial2.write(0x00);
+      Serial2.write(0x0D);
+      Serial2.write(0x0A);
+   }
+
+  if(!digitalRead(KEY_2) && Kay2State)  //按键2是否按下
+   {
+      ++Key2Presses;
+      Serial.printf("K2_OK\n");
+      //Serial2.printf("K%d%d\r\n",2,1);
+      Serial2.write(0x4B);
+      Serial2.write(0x02);
+      Serial2.write(0x01);
+      Serial2.write(0x0D);
+      Serial2.write(0x0A);
+   }
+   else if(Key2Presses && Kay2State)
+   {
+      Key2Presses =0;
+      Serial.printf("K2_NO\n");
+      //Serial2.printf("K%d%d\r\n",2,0);
+      Serial2.write(0x4B);
+      Serial2.write(0x02);
+      Serial2.write(0x00);
+      Serial2.write(0x0D);
+      Serial2.write(0x0A);
+   }
+
+
+
+
+ 
+
+     //保存按键状态
+   Kay1State = digitalRead(KEY_1);
+   Kay2State = digitalRead(KEY_2);
+
+  }
+
+  
+}
+
+
+
+
+
+void Synchronizing_Tasks(void* pvParameters)
+{
+
+  while(true)
+  {
+    //电量
+    if(1)  
+    {
+      BatteryVoltage = analogRead(VBAT_A); //CHARGE
+      //映射  
+      BatteryVoltage = (BatteryVoltage <= BATTERY_CAPACITY_MAX) ? BatteryVoltage : BATTERY_CAPACITY_MAX;
+      TotalVoltage +=BatteryVoltage;
+
+      ++AverageCount;
+
+      if(AverageCount >= 10)
+      {
+        TotalVoltage /= 10;  //求平均
+
+        BatteryLevel = (TotalVoltage -2500) * (255-0) / (BATTERY_CAPACITY_MAX - 2500) + 0;
+
+        BatteryVoltage = BatteryVoltage = AverageCount = 0; //置位为0
+          //Serial.printf("BatteryLevel:%d\n",BatteryLevel);
+      }
+
+      if(BatteryLevel <= HALF_CHARGE) 
+      {
+        if(BatteryLevel > WARNING_BATTERY_LEVEL)
+        {
+          //Yellow -> Redb 
+          digitalWrite(VBAT_LED3,LOW); 
+        }
+        else if(BatteryLevel <= WARNING_BATTERY_LEVEL)
+        {
+            //Yellow -> Red
+          digitalWrite(VBAT_LED2,LOW); 
+        }
+      }
+      else if( BatteryLevel >HALF_CHARGE)
+      {
+        //digitalWrite(VBAT_LED1,HIGH); 
+        digitalWrite(VBAT_LED2,HIGH); 
+        digitalWrite(VBAT_LED3,HIGH); 
+      }
+
+    }//电量
+  }
+}

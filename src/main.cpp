@@ -116,7 +116,7 @@ DriverPins my_pins;                           // 自定义引脚对象
 //===========================================================
 // 音频板 & I2S 编解码器初始化
 //===========================================================
-AudioBoard *audio_board = nullptr;            // 音频板对象指针
+AudioBoard *audio_board = nullptr;           
 I2SCodecStream *i2s_out_stream = nullptr;    // I2S 编解码流对象指针
 TwoWire myWire = TwoWire(0);                 // 通用 I2C 接口
 
@@ -145,7 +145,7 @@ AudioPlayer *player = nullptr;               // 音乐播放器对象指针
  *   或
  *   copier.copyAll();  // 连续实时拷贝
  */
-StreamCopy copier(*i2s_out_stream, *i2s_out_stream); // I2S 输入→输出
+//StreamCopy copier(*i2s_out_stream, *i2s_out_stream); // I2S 输入→输出
 
 
 

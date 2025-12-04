@@ -1,5 +1,5 @@
 /**
- * @file es8311_full_duplex_record_play.ino
+ * @file es8311_full_duplex_record_play.cpp
  * @brief ES8311 + SPH0645LM4H-1-8 音频编解码器示例（32bit PCM）
  *        自定义 GIO 引脚，支持录音、回放 PCM 以及 MP3 播放
  *
@@ -16,7 +16,12 @@
  *  - I2S 标准格式（STD）
  *  - SD 卡存储 PCM 文件
  *  - 32bit PCM（对齐存储）
+ *
+ * 作者：Starrynight252（仓库作者）
+ * 录音 / 播放 PCM 的实现来源于 ChatGPT 提供的程序模板，
+ * 并在此基础上进行了适配与功能扩展。
  */
+
 
 #include "AudioTools.h"   
 #include "AudioTools/AudioLibs/I2SCodecStream.h"       // I2S 编解码流

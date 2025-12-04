@@ -59,6 +59,26 @@
 //===========================================================
 #define I2S_PA_EN (3) // GPIO 控制功放使能
 
+//===========================================================
+// 录音/解码 控制
+//===========================================================
+// 录音时间（秒）
+#define RECORD_SECONDS  10
+
+// 采样率，单位 Hz，这里设置为 16kHz
+#define SAMPLE_RATE  16000 // 16kHz
+
+// 通道数，单声道为1
+#define CHANNELS 1
+
+// 每个采样的位数，这里使用 32bit PCM 
+#define BITS_PER_SAMPLE  32 //16;
+
+// 每个采样的字节数（32bit = 4字节）
+#define BYTES_PER_SAMPLE  4  //2;
+
+// 总采样数 = 录音时间 * 采样率
+#define TOTAL_SAMPLES  RECORD_SECONDS * SAMPLE_RATE
 
 //===========================================================
 // 音乐文件路径 & PCM 文件路径
@@ -99,6 +119,31 @@ TwoWire myWire = TwoWire(0);                 // 通用 I2C 接口
 // 音乐播放器对象
 //===========================================================
 AudioPlayer *player = nullptr;               // 音乐播放器对象指针
+
+
+/* 
+ * StreamCopy 拷贝数据对象，用于将 I2S 输入流复制到 I2S 输出流。
+ *
+ * 这里传入同一个 i2s_out_stream，理论上可实现从麦克风 I2S 输入到喇叭 I2S 输出的
+ * 全双工直通（Passthrough）模式。
+ *
+ * ⚠ 实际效果说明：
+ *   - 本程序中没有调用 copier.copy() 或 copier.copyAll()，因此该对象不会自动进行任何数据拷贝。
+ *   - 注释掉该语句也不影响录音与播放，因为录音和播放是你手动用 read()/write() 完成的。
+ *
+ * 来源参考：
+ *   arduino-audio-tools/examples/streams/streams-i2s-i2s
+ *   该示例中也是把 I2S 输入直接复制到 I2S 输出，需要显式调用 copy() 才会生效。
+ *
+ * 示例（若需要实时直通）：
+ *   copier.copy();     // 单步拷贝一帧数据
+ *   或
+ *   copier.copyAll();  // 连续实时拷贝
+ */
+StreamCopy copier(*i2s_out_stream, *i2s_out_stream); // I2S 输入→输出
+
+
+
 
 void setup()
 {
@@ -184,27 +229,7 @@ void setup()
   delay(1000); // 等待系统准备完毕
 }
 
-// 拷贝数据对象，负责将 I2S 数据从输入复制到输出
-// 这里使用同一个 i2s_out_stream，实现麦克风输入到 I2S 输出的全双工传输
-StreamCopy copier(*i2s_out_stream, *i2s_out_stream); // 麦克风到 I2S
 
-// 录音时间（秒）
-const int RECORD_SECONDS = 10;
-
-// 采样率，单位 Hz，这里设置为 16kHz
-const int SAMPLE_RATE = 16000; // 16kHz
-
-// 通道数，单声道为1
-const int CHANNELS = 1;
-
-// 每个采样的位数，这里使用 32bit PCM 
-const int BITS_PER_SAMPLE = 32; //16;
-
-// 每个采样的字节数（32bit = 4字节）
-const int BYTES_PER_SAMPLE = 4; //2;
-
-// 总采样数 = 录音时间 * 采样率
-const int TOTAL_SAMPLES = RECORD_SECONDS * SAMPLE_RATE;
 void loop()
 {
   // 静态变量，确保录音和播放只执行一次

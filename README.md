@@ -2,7 +2,7 @@ ES8311 Full Duplex Record & Playback Example
 
 简介
 
-这是一个基于 ES8311 音频编解码器 和 SPH0645LM4H-1-8 数字麦克风 的 Arduino 示例，支持 32bit PCM 全双工录音与播放，同时可以播放 SD 卡上的 MP3 文件。
+这是一个基于 ES8311 音频编解码器 和 SPH0645LM4H-1-8 数字麦克风 的 Arduino 示例，支持 32bit wav 全双工录音与播放，同时可以播放 SD 卡上的 wav 文件。
 
 本工程的录音、回放、I2S 配置框架 基于 ChatGPT 提供的程序模板，并由 Starrynight252 （你）进行了进一步修改、完善与调试，使其适配实际硬件环境。
 
@@ -12,15 +12,12 @@ ES8311 Full Duplex Record & Playback Example
 作者说明
 
 作者（Author）：Starrynight252
-注:使用了AI
-部分程序来源：ChatGPT（提供了录音、录音播放的最初代码框架）
-
 
 本项目内容：在模板基础上进行修改完善，包括：
 
 ES8311 全双工初始化
 
-32bit PCM 录音与对齐存储
+32bit wav 录音与对齐存储
 
 PCM 播放
 
@@ -34,15 +31,15 @@ PIO 工程整合与调试
 
 I2S RX + TX 全双工模式
 
-录制 10 秒 PCM（32bit） 并回放
+录制 可以设置的 秒 wav（32bit） 并回放
 
-播放 SD 卡上的 MP3 文件
+播放 SD 卡上的 wav 文件
 
 支持 ES8311 I2C 初始化
 
 I2S 标准格式（STD）
 
-SD 卡存储 PCM 文件（32bit 对齐存储）
+SD 卡存储 wav 文件（32bit 对齐存储）
 
 硬件需求
 
@@ -65,7 +62,7 @@ Micro SD 卡
 AudioTools
 
 arduino-libhelix
-（提供 MP3 解码）
+（提供 解码）
 
 arduino-audio-driver
 （提供 ES8311 驱动）

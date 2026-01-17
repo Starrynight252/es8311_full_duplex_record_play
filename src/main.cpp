@@ -22,12 +22,11 @@
  * 并在此基础上进行了适配与功能扩展。
  */
 
-
-#include "AudioTools.h"   
-#include "AudioTools/AudioLibs/I2SCodecStream.h"       // I2S 编解码流
-#include "AudioTools/Disk/AudioSourceSPIFFS.h"        // SPIFFS 音频源
-#include "AudioTools/AudioCodecs/CodecMP3Helix.h"     // MP3 解码
-#include "AudioTools/Disk/AudioSourceSD.h"            // SD 卡音频源
+#include "AudioTools.h"
+#include "AudioTools/AudioLibs/I2SCodecStream.h" // I2S 编解码流
+#include "AudioTools/Disk/AudioSourceSPIFFS.h"   // SPIFFS 音频源
+#include "AudioTools/AudioCodecs/CodecWAV.h"     //wav解码器
+#include "AudioTools/Disk/AudioSourceSD.h"       // SD 卡音频源
 
 //===========================================================
 // 存储选择
@@ -68,88 +67,92 @@
 // 录音/解码 控制
 //===========================================================
 // 录音时间（秒）
-#define RECORD_SECONDS  10
+#define RECORD_SECONDS 5
 
 // 采样率，单位 Hz，这里设置为 16kHz
-#define SAMPLE_RATE  16000 // 16kHz
+#define SAMPLE_RATE 16000 // 16kHz
 
 // 通道数，单声道为1
 #define CHANNELS 1
 
-// 每个采样的位数，这里使用 32bit PCM 
-#define BITS_PER_SAMPLE  32 //16;
+// 每个采样的位数，这里使用 32bit PCM
+#define BITS_PER_SAMPLE 32 // 16;
 
 // 每个采样的字节数（32bit = 4字节）
-#define BYTES_PER_SAMPLE  4  //2;
+#define BYTES_PER_SAMPLE 4 // 2;
 
 // 总采样数 = 录音时间 * 采样率
-#define TOTAL_SAMPLES  RECORD_SECONDS * SAMPLE_RATE
+#define TOTAL_SAMPLES RECORD_SECONDS *SAMPLE_RATE
 
+// WVA_RECORD 缓冲区 大小
+#define WVA_RECORD_BUFFER_LENGTH 512
 //===========================================================
 // 音乐文件路径 & PCM 文件路径
 //===========================================================
-const char *startFilePath = "/music";    // SD 卡/ SPIFFS 音乐文件夹路径
-const char *ext = "test.mp3";            // 默认 MP3 文件名
-#define RECORD_FILE_PATH "/rec.pcm"      // PCM 录音文件存储路径
+const char *startFilePath = "/music"; // SD 卡/ SPIFFS 音乐文件夹路径
+const char *ext = "test.wav";         // 默认 WAV 文件名
+#define RECORD_FILE_PATH "/rec.wav"   // WAV 录音文件存储路径
 
 //===========================================================
 // I2S 音频信息配置（麦克风输入）
 //===========================================================
 AudioInfo info(16000, 1, 32); // SPH0645 LM4H，单声道，16kHz，32bit PCM
 
+WAVEncoder encoder; //  EncoderWAV 编码器对象--用于录音保存为 WAV 文件
+
 //===========================================================
 // SD 卡音源初始化
 //===========================================================
 #if MP3_FILE_SD_OR_SPIFFS
-SPIClass mySPI = SPIClass(1);                 // 使用第二组 SPI 接口
-AudioSourceSD *source = nullptr;             // SD 卡音源指针
+SPIClass mySPI = SPIClass(1);    // 使用第二组 SPI 接口
+AudioSourceSD *source = nullptr; // SD 卡音源指针
 #else
-AudioSourceSPIFFS *source = nullptr;         // SPIFFS 音源指针
+AudioSourceSPIFFS *source = nullptr; // SPIFFS 音源指针
 #endif
 
 //===========================================================
 // MP3 解码器 & 音频引脚管理
 //===========================================================
-MP3DecoderHelix decoder;                      // MP3 解码器对象
-DriverPins my_pins;                           // 自定义引脚对象
+WAVDecoder decoder; // wav解码
+DriverPins my_pins; // 自定义引脚对象
 
 //===========================================================
 // 音频板 & I2S 编解码器初始化
 //===========================================================
-AudioBoard *audio_board = nullptr;           
-I2SCodecStream *i2s_out_stream = nullptr;    // I2S 编解码流对象指针
-TwoWire myWire = TwoWire(0);                 // 通用 I2C 接口
+AudioBoard *audio_board = nullptr;
+I2SCodecStream *i2s_out_stream = nullptr; // I2S 编解码流对象指针
+TwoWire myWire = TwoWire(0);              // 通用 I2C 接口
 
 //===========================================================
 // 音乐播放器对象
 //===========================================================
-AudioPlayer *player = nullptr;               // 音乐播放器对象指针
+AudioPlayer *player = nullptr; // 音乐播放器对象指针
 
+static bool recordingDone = false;
+static bool playRecDone = false;
+static bool playMusicDone = false;
+uint8_t WVA_RECORDBuf[WVA_RECORD_BUFFER_LENGTH];
 
-/* 
- * StreamCopy 拷贝数据对象，用于将 I2S 输入流复制到 I2S 输出流。
+/**
+ * @brief 在录音前播放一个短暂的静音 WAV 文件，用于清空 I2S 缓冲区
  *
- * 这里传入同一个 i2s_out_stream，理论上可实现从麦克风 I2S 输入到喇叭 I2S 输出的
- * 全双工直通（Passthrough）模式。
+ * 该函数会：
+ * 1. 创建一个短时静音 WAV 文件（几毫秒）。
+ * 2. 使用 WAV 编码器写入静音数据。
+ * 3. 停止功放输出，防止噪声干扰。
+ * 4. 播放生成的静音 WAV 文件，确保 I2S 编解码器缓冲区被清空。
  *
- * ⚠ 实际效果说明：
- *   - 本程序中没有调用 copier.copy() 或 copier.copyAll()，因此该对象不会自动进行任何数据拷贝。
- *   - 注释掉该语句也不影响录音与播放，因为录音和播放是你手动用 read()/write() 完成的。
+ * 使用场景：
+ * - 在从播放 WAV 音乐切换到录音前调用，避免录音噪声。
  *
- * 来源参考：
- *   arduino-audio-tools/examples/streams/streams-i2s-i2s
- *   该示例中也是把 I2S 输入直接复制到 I2S 输出，需要显式调用 copy() 才会生效。
+ * 注意：
+ * - 需要确保 player、encoder、I2S 编解码器对象已经初始化。
+ * - 静音 WAV 文件会临时写入 SD 卡路径 `currentFilePath_WVA_RECORD`。
  *
- * 示例（若需要实时直通）：
- *   copier.copy();     // 单步拷贝一帧数据
- *   或
- *   copier.copyAll();  // 连续实时拷贝
  */
-//StreamCopy copier(*i2s_out_stream, *i2s_out_stream); // I2S 输入→输出
+void flushI2SWithSilentWAV();
 
-
-
-
+// ====================== WAV 编码器 ======================
 void setup()
 {
   //===========================================================
@@ -176,8 +179,8 @@ void setup()
   //===========================================================
   // 音频板和 I2S 初始化
   //===========================================================
-  audio_board = new AudioBoard(AudioDriverES8311, my_pins);   // 创建音频板对象
-  i2s_out_stream = new I2SCodecStream(audio_board);           // 创建 I2S 编解码流对象
+  audio_board = new AudioBoard(AudioDriverES8311, my_pins);    // 创建音频板对象
+  i2s_out_stream = new I2SCodecStream(audio_board);            // 创建 I2S 编解码流对象
   player = new AudioPlayer(*source, *i2s_out_stream, decoder); // 创建播放器对象
 
   //===========================================================
@@ -214,124 +217,145 @@ void setup()
   // I2S 配置并启动
   //===========================================================
   auto i2s_config = i2s_out_stream->defaultConfig(RXTX_MODE); // 获取默认配置
-  i2s_config.copyFrom(info);                                   // 应用麦克风参数
-  i2s_config.i2s_format = I2S_STD_FORMAT;                      // I2S 标准格式
-  i2s_out_stream->begin(i2s_config);                           // 启动 I2S
-  i2s_out_stream->setVolume(0.55);                             // I2S 初始音量
+  i2s_config.copyFrom(info);                                  // 应用麦克风参数
+  i2s_config.i2s_format = I2S_STD_FORMAT;                     // I2S 标准格式
+  i2s_out_stream->begin(i2s_config);                          // 启动 I2S
+  i2s_out_stream->setVolume(0.55);                            // I2S 初始音量
 
   //===========================================================
   // 播放器增益设置
   //===========================================================
-  player->setVolume(1.0);  // 设置播放器音量
+  player->setVolume(1.0); // 设置播放器音量
 
   //===========================================================
-  // MP3 文件初始化（加载 test.mp3，但不播放）
+  // WAV 文件初始化（加载 test.wav，但不播放）
   //===========================================================
-  player->begin(0, 0); 
-  std::string filepath = "/music/a1.mp3";  // 指向新的 MP3 文件
-  player->setPath(filepath.c_str());       // 重新设置播放路径
+  player->begin(0, 0);
+  // std::string filepath = "/music/a1.wav"; // 指向新的 WAV 文件
+  // player->setPath(filepath.c_str());      // 重新设置播放路径
 
   delay(1000); // 等待系统准备完毕
 }
 
-
 void loop()
 {
-  // 静态变量，确保录音和播放只执行一次
-  static bool recordingDone = false;
-  static bool playbackDone = false;
 
-  // ============================================
-  //      2. 开始录音 (只录一次)
-  // ============================================
+  // =====================================================
+  // 1️⃣ 录音 → 保存为 WAV
+  // =====================================================
   if (!recordingDone)
   {
-    Serial.println("开始录音，保存 PCM 到 SD");
+    Serial.println("开始录音 WAV");
 
-    // 打开文件用于写入 PCM 数据
+    // 停止播放器，确保 I2S RX 可用
+    player->end();
+
     File recFile = SD.open(RECORD_FILE_PATH, FILE_WRITE);
     if (!recFile)
     {
-      Serial.println("错误：无法打开文件进行录音！");
+      Serial.println("无法创建 rec.wav");
       return;
     }
 
-    uint8_t buf[512];           // 缓冲区
-    int samples_recorded = 0;   // 已录制样本数
+    encoder.begin(info);
+    encoder.setOutput(recFile);
+
+    int samples_recorded = 0;
 
     while (samples_recorded < TOTAL_SAMPLES)
     {
-      // 从 I2S 麦克风读取数据
-      size_t bytes = i2s_out_stream->readBytes(buf, sizeof(buf));
+      size_t bytes = i2s_out_stream->readBytes(WVA_RECORDBuf, sizeof(WVA_RECORDBuf)); // 从 I2S 读取音频数据
+      if (bytes < BYTES_PER_SAMPLE)                                                   // 数据不足，继续读取
+        continue;
 
-      if (bytes < BYTES_PER_SAMPLE)
-        continue; // 数据不足一个采样，跳过
+      size_t aligned = (bytes / BYTES_PER_SAMPLE) * BYTES_PER_SAMPLE;
 
-      // 保证按照每个采样对齐（32bit）
-      size_t aligned_bytes = (bytes / BYTES_PER_SAMPLE) * BYTES_PER_SAMPLE;
-
-      // 写入 SD 卡
-      recFile.write(buf, aligned_bytes);
-
-      // 更新已录制样本数
-      samples_recorded += aligned_bytes / BYTES_PER_SAMPLE;
-
-      // 每录制 1600 个样本打印一次进度
-      if ((samples_recorded % 1600) == 0)
-      {
-        Serial.printf("录制进度: %d / %d 样本\n", samples_recorded, TOTAL_SAMPLES);
-      }
+      encoder.write(WVA_RECORDBuf, aligned); // 写入 WAV 编码器
+      samples_recorded += aligned / BYTES_PER_SAMPLE;
     }
 
+    encoder.end(); // 写 WAV 头
     recFile.close();
-    Serial.println("录音完成");
+
     recordingDone = true;
+    Serial.println("录音完成：rec.wav");
+    delay(1000);
   }
 
-  // ============================================
-  //      3. 播放录音 PCM
-  // ============================================
-  if (recordingDone && !playbackDone)
+  // =====================================================
+  // 2️⃣ 播放录音 WAV
+  // =====================================================
+  if (recordingDone && !playRecDone)
   {
-    Serial.println("开始播放录音 PCM");
+    Serial.println("播放录音 WAV");
 
-    // 打开录音文件用于读取
-    File playFile = SD.open(RECORD_FILE_PATH, FILE_READ);
-    if (!playFile)
+    player->setPath(RECORD_FILE_PATH);
+    player->play();
+
+    while (player->copy())
     {
-      Serial.println("错误：无法打开录音文件！");
-      return;
+      // AudioPlayer 内部自动解码 WAV → I2S
     }
 
-    uint8_t buf[512];  // 缓冲区
-
-    while (playFile.available())
-    {
-      // 读取文件数据到缓冲区
-      size_t bytesRead = playFile.read(buf, sizeof(buf));
-
-      if (bytesRead < BYTES_PER_SAMPLE)
-        continue; // 数据不足一个采样，跳过
-
-      // 按采样对齐
-      size_t aligned = (bytesRead / BYTES_PER_SAMPLE) * BYTES_PER_SAMPLE;
-
-      // 写入 I2S 输出
-      i2s_out_stream->write(buf, aligned);
-    }
-
-    playFile.close();
-    Serial.println("PCM 播放完成");
-    playbackDone = true;
+    playRecDone = true;
+    Serial.println("录音 WAV 播放完成");
+    delay(1000);
   }
 
-  // 播放 MP3 文件
-  player->play();  // 准备播放 
+  // =====================================================
+  // 3️⃣ 播放 SD 卡 WAV 音乐
+  // =====================================================
+  if (!playMusicDone)
+  {
+    Serial.println("播放 SD WAV 音乐");
 
-  // 播放整个音频流
-  // copyAll 会一次性播放完毕
-  // 推荐在 FreeRTOS 任务中使用 copy() 并挂起任务，避免频繁调用 copyAll
-  player->copyAll();  
+    // 使用你 setup 里定义的 source/ext
+    player->setPath("/music/test.wav");
+    player->play();
 
-  delay(20); // 延时，避免占满 CPU
+    while (player->copy())
+    {
+    }
+
+    playMusicDone = true;
+    Serial.println("音乐 WAV 播放完成");
+  }
+
+  delay(2000);
 }
+
+void flushI2SWithSilentWAV()
+{
+  // 清空数据
+  memset(WVA_RECORDBuf, 0, WVA_RECORD_BUFFER_LENGTH);
+
+  File WVA_RECORDFile = SD.open(RECORD_FILE_PATH, FILE_WRITE);
+  if (!WVA_RECORDFile)
+  {
+    return;
+  }
+
+  encoder.begin(info);               // 使用与输入相同的音频信息初始化编码器
+  encoder.setOutput(WVA_RECORDFile); // 设置输出文件
+
+  digitalWrite(I2S_PA_EN, 0); // 停止功放
+
+  //单位8ms(与音频info设置有关)
+  for (int o = 0; o < 1; o++)
+  {
+    // 写入一个空数据
+    encoder.write(WVA_RECORDBuf, WVA_RECORD_BUFFER_LENGTH); // 512 总结大概8ms
+  }
+
+  encoder.end(); // 写 WAV 头
+  // 关闭文件
+  WVA_RECORDFile.close();
+  vTaskDelay(5 / portTICK_PERIOD_MS); // 等待完成
+  // 设置文件路径
+  player->setPath(RECORD_FILE_PATH);
+  player->play();
+  player->copyAll(); // 播放
+
+  vTaskDelay(5 / portTICK_PERIOD_MS); // 等待完成
+}
+
